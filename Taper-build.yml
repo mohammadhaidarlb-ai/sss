@@ -1,0 +1,719 @@
+# Builds the Taper Android app (APK). Everything the build needs is inside this one file.
+name: Build Taper APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+
+permissions:
+  contents: write
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Write the app files
+        run: |
+          mkdir -p www
+          cat > package.json <<'PKG_EOF'
+          {
+            "name": "taper",
+            "version": "1.0.0",
+            "private": true,
+            "description": "Taper: cut down smoking to zero, one week at a time",
+            "dependencies": {
+              "@capacitor/android": "^6.2.0",
+              "@capacitor/core": "^6.2.0"
+            },
+            "devDependencies": {
+              "@capacitor/cli": "^6.2.0"
+            }
+          }
+          PKG_EOF
+          cat > capacitor.config.json <<'CFG_EOF'
+          {
+            "appId": "app.taper.quit",
+            "appName": "Taper",
+            "webDir": "www"
+          }
+          CFG_EOF
+          cat > www/index.html <<'HTML_EOF'
+          <!doctype html>
+          <html lang="en">
+          <head>
+          <meta charset="utf-8">
+          <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+          <style>:root{color-scheme:light;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}body{margin:0}[hidden]{display:none!important}</style>
+          <title>Taper</title>
+          <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&display=swap">
+          <style>
+          /* Layout: one-screen phone app. A scrolling view sits above a floating tab bar.
+             Today's hero is a progress ring; the ring and countdown are the two things you check. */
+          :root{
+            --bg:#EEF4F3; --surface:#FFFFFF; --ink:#102429; --muted:#587076; --line:#D5E2E0; --track:#DCE8E6;
+            --air:#087A6F; --air-soft:#D6EFEA;
+            --warn:#8F5B00; --warn-arc:#E0A12B;
+            --over:#B83A30; --over-arc:#D9534A;
+            --font-display:"Bricolage Grotesque","DM Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
+            --font-body:"DM Sans",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+          }
+          @media (prefers-color-scheme: dark){
+            :root:not([data-theme="light"]){
+              --bg:#0B1618; --surface:#122326; --ink:#E4F1EF; --muted:#8FA9AD; --line:#21383C; --track:#1C3236;
+              --air:#3CC4B3; --air-soft:#123A38;
+              --warn:#E3A93A; --warn-arc:#E3A93A;
+              --over:#EF7A6E; --over-arc:#EF7A6E;
+              color-scheme:dark;
+            }
+          }
+          :root[data-theme="dark"]{
+            --bg:#0B1618; --surface:#122326; --ink:#E4F1EF; --muted:#8FA9AD; --line:#21383C; --track:#1C3236;
+            --air:#3CC4B3; --air-soft:#123A38;
+            --warn:#E3A93A; --warn-arc:#E3A93A;
+            --over:#EF7A6E; --over-arc:#EF7A6E;
+            color-scheme:dark;
+          }
+
+          *,*::before,*::after{box-sizing:border-box}
+          html,body{height:100%}
+          body{
+            margin:0; background:var(--bg); color:var(--ink);
+            font:400 16px/1.45 var(--font-body);
+            padding-block:0;
+            padding-left:max(16px,env(safe-area-inset-left,0px));
+            padding-right:max(16px,env(safe-area-inset-right,0px));
+            -webkit-font-smoothing:antialiased; -webkit-text-size-adjust:100%;
+          }
+          button,input{font:inherit;color:inherit}
+          button{cursor:pointer}
+          :focus-visible{outline:2px solid var(--air);outline-offset:2px}
+          .muted{color:var(--muted)}
+
+          #app{max-width:520px;margin:0 auto;height:100%;display:flex;flex-direction:column}
+          #view{flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain;padding-block:16px 12px;scrollbar-width:thin}
+
+          .eyebrow{margin:0;font:600 12px/1.2 var(--font-body);letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+          h1{margin:4px 0 0;font:700 30px/1.1 var(--font-display);letter-spacing:-.02em;text-wrap:balance}
+          h2{margin:0;font:700 18px/1.2 var(--font-display);letter-spacing:-.01em}
+          p{margin:0}
+          .lead{color:var(--muted);max-width:44ch}
+          .stack{display:grid;gap:16px}
+          .top{display:flex;justify-content:space-between;align-items:flex-start;gap:8px 12px;flex-wrap:wrap}
+          .chip{display:inline-flex;align-items:center;min-height:30px;padding:0 12px;border-radius:999px;background:var(--air-soft);color:var(--air);font-weight:700;font-size:13px;white-space:nowrap}
+          .card{background:var(--surface);border:1px solid var(--line);border-radius:20px;padding:16px}
+
+          /* Today */
+          .hero{position:relative;width:min(68vw,250px);aspect-ratio:1;margin:4px auto 0}
+          .hero svg{width:100%;height:100%;display:block}
+          .hero .track{stroke:var(--track)}
+          .hero .arc{transition:stroke-dashoffset .5s ease,stroke .3s ease}
+          .hero.ok .arc{stroke:var(--air)}
+          .hero.warn .arc{stroke:var(--warn-arc)}
+          .hero.over .arc{stroke:var(--over-arc)}
+          .hero .center{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center}
+          .big{font:700 clamp(56px,19vw,84px)/1 var(--font-display);letter-spacing:-.03em;font-variant-numeric:tabular-nums}
+          .of{color:var(--muted);font-size:15px;margin-top:2px}
+          .status{text-align:center;font:700 18px/1.2 var(--font-display)}
+          .status.ok{color:var(--air)} .status.warn{color:var(--warn)} .status.over{color:var(--over)}
+
+          .pace{display:grid;gap:2px;background:var(--surface);border:1px solid var(--line);border-radius:20px;padding:16px 18px}
+          .pace .time{font:700 40px/1.15 var(--font-body);font-variant-numeric:tabular-nums;letter-spacing:-.01em}
+          .pace.ready .time{color:var(--air)}
+          .pace .sub{color:var(--muted);font-size:14px}
+
+          .btn-main{width:100%;min-height:66px;border:0;border-radius:18px;background:var(--ink);color:var(--bg);font:700 19px/1 var(--font-display);transition:transform .08s ease}
+          .btn-main:active{transform:scale(.985)}
+          .btn-line{width:100%;min-height:50px;border:1.5px solid var(--line);border-radius:14px;background:transparent;font-weight:600}
+          .btn-line:active{background:var(--track)}
+          .btn-air{min-height:50px;border:0;border-radius:14px;background:var(--air);color:var(--bg);font-weight:700;padding:0 20px}
+          .btn-sm{min-height:44px;padding:0 16px}
+          .btn-row{display:flex;gap:10px;flex-wrap:wrap}
+          .btn-row>*{flex:1 1 140px}
+
+          .times{display:flex;flex-wrap:wrap;gap:8px}
+          .t{display:inline-flex;align-items:center;min-height:40px;background:var(--surface);border:1px solid var(--line);border-radius:999px;padding:0 2px 0 14px;font-variant-numeric:tabular-nums;font-weight:500}
+          .t button{width:38px;height:38px;border:0;background:transparent;color:var(--muted);border-radius:50%;font-size:20px;line-height:1}
+
+          /* Forms */
+          .field{display:grid;gap:6px;min-width:0}
+          .field label,.field legend{font-weight:600;font-size:14px;padding:0}
+          fieldset{border:0;margin:0;padding:0;min-width:0;display:grid;gap:6px}
+          input[type=number],input[type=time],input[type=text]{width:100%;min-height:50px;border:1.5px solid var(--line);background:var(--surface);color:var(--ink);border-radius:12px;padding:0 14px;font-weight:500;font-size:17px}
+          input:focus{border-color:var(--air);outline:none}
+          .row2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+          .row3{display:grid;grid-template-columns:1.2fr 1fr .8fr;gap:12px}
+          .seg{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
+          .seg button{min-height:50px;border:1.5px solid var(--line);background:var(--surface);border-radius:12px;font-weight:600}
+          .seg button[aria-pressed="true"]{border-color:var(--air);background:var(--air-soft);color:var(--air)}
+          .hint{font-size:13px;color:var(--muted)}
+          .err{min-height:1.3em;color:var(--over);font-size:14px;font-weight:600}
+          .preview{background:var(--air-soft);border-radius:14px;padding:14px;line-height:1.5}
+          .onb{display:grid;gap:18px;padding-top:8px}
+
+          /* Plan */
+          .weeks{list-style:none;margin:0;padding:0;display:grid;gap:6px}
+          .wk{display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;gap:12px;padding:10px 14px;border-radius:12px;background:var(--surface);border:1px solid var(--line)}
+          .wk .w{font-weight:700;min-width:5.2em}
+          .wk .d{font-size:14px;color:var(--muted);min-width:0}
+          .wk .l{font:700 18px/1 var(--font-display);font-variant-numeric:tabular-nums;text-align:right}
+          .wk.past{opacity:.55}
+          .wk.now{border-color:var(--air);background:var(--air-soft)}
+          .wk.now .d{color:var(--ink)}
+          .stairs{width:100%;height:auto;display:block}
+          .stairs text{fill:var(--muted);font:11px var(--font-body)}
+          .stairs text.cur{fill:var(--air);font-weight:700;font-size:12px}
+
+          /* Progress */
+          .tiles{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+          .tile{background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:14px;min-width:0}
+          .tile .v{font:700 30px/1.1 var(--font-display);letter-spacing:-.02em;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+          .tile .k{color:var(--muted);font-size:13px;margin-top:4px}
+          .chart{width:100%;height:auto;display:block}
+          .chart text{fill:var(--muted);font:11px var(--font-body)}
+          .chart text.today{fill:var(--ink);font-weight:700}
+          .legend{display:flex;flex-wrap:wrap;gap:6px 16px;color:var(--muted);font-size:13px}
+          .sw{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:6px;vertical-align:-1px}
+
+          /* Tab bar */
+          #tabs{flex:none;display:grid;grid-template-columns:repeat(4,1fr);gap:4px;background:var(--surface);border:1px solid var(--line);border-radius:22px;padding:6px;margin-bottom:8px}
+          #tabs button{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;min-height:54px;border:0;background:transparent;color:var(--muted);font-size:12px;font-weight:500;border-radius:16px}
+          #tabs button svg{width:22px;height:22px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+          #tabs button[aria-current="page"]{background:var(--air-soft);color:var(--air);font-weight:700}
+
+          #toast{position:fixed;z-index:20;left:max(16px,env(safe-area-inset-left,0px));right:max(16px,env(safe-area-inset-right,0px));bottom:calc(env(safe-area-inset-bottom,0px) + 92px);max-width:488px;margin-inline:auto;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 16px;border-radius:14px;background:var(--ink);color:var(--bg);box-shadow:0 8px 24px rgba(0,0,0,.2);font-weight:500}
+          #toast button{border:0;background:transparent;color:inherit;font-weight:700;text-decoration:underline;min-height:40px;padding:0 6px}
+
+          @media (max-width:360px){.row3{grid-template-columns:1fr 1fr}.row3>.field:first-child{grid-column:1/-1}}
+          @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+          </style>
+
+          <div id="app">
+            <main id="view" tabindex="-1"></main>
+            <nav id="tabs" aria-label="Sections" hidden></nav>
+          </div>
+          <div id="toast" role="status" aria-live="polite" hidden></div>
+
+          <script>
+          (function(){
+          'use strict';
+
+          /* ---------- basics ---------- */
+          const LS_KEY='taper.v1';
+          const DAY_START_H=4; // a "day" rolls over at 04:00, so a 1 a.m. cigarette counts toward the day before
+          const $=s=>document.querySelector(s);
+          const pad=n=>String(n).padStart(2,'0');
+          const clone=o=>JSON.parse(JSON.stringify(o));
+          const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+          let state=null, tab='today', obWeeks=12, ask=null, lastLog=null, toastTimer=null, shownKey='';
+          let remoteDoc=null, remoteTimer=null, remoteBusy=false, remoteDirty=false, remoteFail=false;
+
+          /* ---------- storage: this device first, account copy when available ---------- */
+          function normalize(s){
+            if(!s||!s.plan) return null;
+            s.log=s.log||{}; s.limits=s.limits||{}; s.resisted=s.resisted||{};
+            const p=s.plan;
+            p.wake=p.wake||'07:00'; p.sleep=p.sleep||'23:00';
+            p.packSize=p.packSize||20; p.packPrice=p.packPrice||0; p.cur=p.cur||'$';
+            return s;
+          }
+          function loadLocal(){try{const t=localStorage.getItem(LS_KEY);return t?normalize(JSON.parse(t)):null}catch(e){return null}}
+          function saveLocal(){try{if(state)localStorage.setItem(LS_KEY,JSON.stringify(state));else localStorage.removeItem(LS_KEY)}catch(e){}}
+          function persist(){if(!state)return;state.updatedAt=Date.now();saveLocal();scheduleRemote()}
+          function scheduleRemote(){if(!remoteDoc)return;remoteDirty=true;clearTimeout(remoteTimer);remoteTimer=setTimeout(flushRemote,900)}
+          async function flushRemote(){
+            if(!remoteDoc||remoteBusy||!remoteDirty||!state)return;
+            remoteBusy=true;remoteDirty=false;
+            try{await remoteDoc.set(clone(state));remoteFail=false}catch(e){remoteFail=true}
+            remoteBusy=false;
+            if(remoteDirty)scheduleRemote();
+            updateSyncNote();
+          }
+          function updateSyncNote(){
+            const el=$('#sync-note');if(!el)return;
+            el.textContent=!remoteDoc?'Saved on this device only.':remoteFail?'Saved on this device. The account copy will retry on your next change.':'Saved on this device and to your Claude account.';
+          }
+          async function initRemote(){
+            try{
+              if(!window.claude||!window.claude.use)return;
+              const [db,user]=await Promise.all([window.claude.use('db'),window.claude.use('user')]);
+              if(!db||!user)return;
+              const id=await user.id();
+              if(!id)return;
+              remoteDoc=db.collection('data/users/'+id).doc('taper');
+              const snap=await remoteDoc.get();
+              const r=snap.exists?normalize(clone(snap.data())):null;
+              if(r&&(!state||(r.updatedAt||0)>(state.updatedAt||0))){state=r;saveLocal();render()}
+              else if(state){remoteDirty=true;await flushRemote()}
+              updateSyncNote();
+            }catch(e){remoteDoc=remoteDoc||null}
+          }
+
+          /* ---------- dates ---------- */
+          const keyOf=ts=>{const d=new Date(ts-DAY_START_H*3600000);return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate())};
+          const parseKey=k=>{const a=k.split('-').map(Number);return{y:a[0],m:a[1],d:a[2]}};
+          const dayStartTs=k=>{const{y,m,d}=parseKey(k);return new Date(y,m-1,d,DAY_START_H).getTime()};
+          const dayNum=k=>{const{y,m,d}=parseKey(k);return Math.round(Date.UTC(y,m-1,d)/86400000)};
+          const addDays=(k,n)=>{const{y,m,d}=parseKey(k);const t=new Date(Date.UTC(y,m-1,d+n));return t.getUTCFullYear()+'-'+pad(t.getUTCMonth()+1)+'-'+pad(t.getUTCDate())};
+          const dateOf=k=>{const{y,m,d}=parseKey(k);return new Date(y,m-1,d,12)};
+          const fmtDate=(k,o)=>dateOf(k).toLocaleDateString(undefined,o);
+          const fmtTime=ts=>new Date(ts).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
+          const hm=s=>{const a=String(s||'').split(':');return{h:parseInt(a[0],10)||0,m:parseInt(a[1],10)||0}};
+          function fmtCountdown(ms){
+            const s=Math.max(0,Math.ceil(ms/1000)),h=Math.floor(s/3600),m=Math.floor(s%3600/60),x=s%60;
+            return h>0?h+':'+pad(m)+':'+pad(x):pad(m)+':'+pad(x);
+          }
+
+          /* ---------- plan math ---------- */
+          const limitForWeek=(p,w)=>w>=p.weeks?0:Math.max(1,Math.round(p.start*(1-w/p.weeks)));
+          const weekIndex=(p,k)=>Math.max(0,Math.floor((dayNum(k)-dayNum(p.planStart))/7));
+          const limitFor=(p,k)=>limitForWeek(p,weekIndex(p,k));
+          function wakingMinutes(wake,sleep){const w=hm(wake),s=hm(sleep);let m=(s.h*60+s.m)-(w.h*60+w.m);if(m<=0)m+=1440;return m}
+          function ensureDay(k){const lim=limitFor(state.plan,k);if(state.limits[k]!==lim){state.limits[k]=lim;persist()}}
+
+          /* Pacing: space what is left of today's allowance across the rest of the waking day. */
+          function pacing(now){
+            const p=state.plan,k=keyOf(now),lim=limitFor(p,k),arr=state.log[k]||[],n=arr.length;
+            const{y,m,d}=parseKey(k),w=hm(p.wake),s=hm(p.sleep);
+            const wakeTs=new Date(y,m-1,d,w.h,w.m).getTime();
+            let sleepTs=new Date(y,m-1,d,s.h,s.m).getTime();
+            if(sleepTs<=wakeTs)sleepTs+=86400000;
+            if(lim===0)return{mode:'free',lim,n};
+            if(n>=lim)return{mode:'done',lim,n};
+            let nextAt,gap;
+            if(n===0){gap=(sleepTs-wakeTs)/lim;nextAt=wakeTs}
+            else{const last=dayStartTs(k)+arr[n-1]*60000;gap=Math.max(600000,(sleepTs-last)/(lim-n));nextAt=last+gap}
+            return{mode:nextAt>now?'wait':'ready',lim,n,nextAt,gap,k};
+          }
+
+          /* ---------- actions ---------- */
+          function toast(msg,undo){
+            const t=$('#toast');
+            t.innerHTML='<span></span>'+(undo?'<button type="button" data-act="undo">Undo</button>':'');
+            t.firstChild.textContent=msg;t.hidden=false;
+            clearTimeout(toastTimer);toastTimer=setTimeout(()=>{t.hidden=true},undo?7000:3500);
+          }
+          function smoke(){
+            const now=Date.now(),k=keyOf(now);
+            const arr=(state.log[k]=state.log[k]||[]);
+            const m=Math.max(0,Math.round((now-dayStartTs(k))/60000));
+            arr.push(m);arr.sort((a,b)=>a-b);
+            persist();lastLog={k,m};
+            const lim=limitFor(state.plan,k),n=arr.length;
+            let msg='Logged at '+fmtTime(now)+'.';
+            if(lim===0)msg+=' Tomorrow is a new day.';
+            else if(n>lim)msg+=' '+(n-lim)+' over today’s limit.';
+            else if(n===lim)msg+=' That was your last one for today.';
+            else{const pc=pacing(now);msg+=' Next one in about '+Math.max(1,Math.round((pc.nextAt-now)/60000))+' min.'}
+            toast(msg,true);render();
+          }
+          function undoLast(){
+            if(!lastLog)return;
+            const arr=state.log[lastLog.k]||[],i=arr.indexOf(lastLog.m);
+            if(i>=0){arr.splice(i,1);persist()}
+            lastLog=null;$('#toast').hidden=true;render();
+          }
+          function resist(){
+            const k=keyOf(Date.now());
+            state.resisted[k]=(state.resisted[k]||0)+1;persist();
+            toast('Craving resisted. That is '+state.resisted[k]+' today.');render();
+          }
+          function removeAt(i){
+            const k=keyOf(Date.now()),arr=state.log[k]||[];
+            if(i>=0&&i<arr.length){arr.splice(i,1);persist();render()}
+          }
+
+          /* ---------- views ---------- */
+          const statusCls=(n,lim)=>lim===0?(n===0?'ok':'over'):n>lim?'over':n/lim>=0.8?'warn':'ok';
+
+          function viewOnboard(){
+            return `<form class="onb" id="onb-form" novalidate>
+              <div>
+                <p class="eyebrow">Taper</p>
+                <h1>Smoke a little less each week until you stop.</h1>
+                <p class="lead" style="margin-top:10px">Taper lowers your daily limit every week and spaces your cigarettes across the day, so you always know when the next one is allowed.</p>
+              </div>
+              <div class="field">
+                <label for="ob-start">Cigarettes per day right now</label>
+                <input id="ob-start" type="number" inputmode="numeric" min="1" max="200" value="30">
+              </div>
+              <fieldset>
+                <legend>Time to reach zero</legend>
+                <div class="seg">
+                  ${[8,12,16,24].map(w=>`<button type="button" data-act="weeks" data-w="${w}" aria-pressed="${w===obWeeks}">${w} weeks</button>`).join('')}
+                </div>
+              </fieldset>
+              <div class="row2">
+                <div class="field"><label for="ob-wake">Wake up</label><input id="ob-wake" type="time" value="07:00"></div>
+                <div class="field"><label for="ob-sleep">Last cigarette by</label><input id="ob-sleep" type="time" value="23:00"></div>
+              </div>
+              <p class="preview" id="ob-preview"></p>
+              <p class="err" id="ob-err"></p>
+              <button class="btn-main" type="submit">Start my plan</button>
+            </form>`;
+          }
+          function updateObPreview(){
+            const el=$('#ob-preview');if(!el)return;
+            const start=parseInt($('#ob-start').value,10);
+            if(!(start>=1&&start<=200)){el.textContent='Enter how many cigarettes you smoke a day.';return}
+            const per=Math.round(start/obWeeks*10)/10;
+            const free=addDays(keyOf(Date.now()),obWeeks*7);
+            const gap=Math.round(wakingMinutes($('#ob-wake').value,$('#ob-sleep').value)/start);
+            el.innerHTML='<strong>'+start+'</strong> a day to begin, about <strong>'+per+'</strong> fewer each week. Smoke-free from <strong>'+esc(fmtDate(free,{weekday:'short',day:'numeric',month:'long',year:'numeric'}))+'</strong>. Week one means roughly one cigarette every <strong>'+gap+'</strong> minutes.';
+          }
+
+          function viewToday(){
+            const now=Date.now(),k=keyOf(now),p=state.plan;
+            const lim=limitFor(p,k),w=weekIndex(p,k),arr=state.log[k]||[],n=arr.length,res=state.resisted[k]||0;
+            const cls=statusCls(n,lim),frac=lim===0?1:Math.min(1,n/lim),C=2*Math.PI*92;
+            let status;
+            if(lim===0)status=n===0?'Smoke-free so far today':n+' smoked today';
+            else if(n>lim)status=(n-lim)+' over today’s limit';
+            else if(n===lim)status='Limit reached';
+            else status=(lim-n)+' left today';
+            const phase=w>=p.weeks?'Smoke-free phase':'Week '+(w+1)+' of '+p.weeks;
+            const ds=dayStartTs(k);
+            const chips=arr.length?'<div class="times">'+arr.map((m,i)=>{const t=fmtTime(ds+m*60000);return `<span class="t"><span>${esc(t)}</span><button type="button" data-act="del" data-i="${i}" aria-label="Remove ${esc(t)}">×</button></span>`}).join('')+'</div>':'<p class="muted">Nothing logged yet. Tap the button each time you smoke.</p>';
+            return `<div class="stack">
+              <div class="top">
+                <div><p class="eyebrow">${esc(fmtDate(k,{weekday:'long',month:'long',day:'numeric'}))}</p><h1>Today</h1></div>
+                <span class="chip">${esc(phase)}</span>
+              </div>
+              <div class="hero ${cls}">
+                <svg viewBox="0 0 220 220" role="img" aria-label="${n} of ${lim} cigarettes today">
+                  <circle class="track" cx="110" cy="110" r="92" fill="none" stroke-width="14"/>
+                  <circle class="arc" cx="110" cy="110" r="92" fill="none" stroke-width="14" stroke-linecap="round" stroke-dasharray="${C.toFixed(2)}" stroke-dashoffset="${(C*(1-frac)).toFixed(2)}" transform="rotate(-90 110 110)" style="opacity:${frac>0?1:0}"/>
+                </svg>
+                <div class="center"><span class="big">${n}</span><span class="of">${lim===0?'goal: none':'of '+lim}</span></div>
+              </div>
+              <p class="status ${cls}">${esc(status)}</p>
+              <section class="pace" id="pace" aria-label="Pacing"><p class="eyebrow" id="pace-l"></p><p class="time" id="pace-t"></p><p class="sub" id="pace-s"></p></section>
+              <button class="btn-main" type="button" data-act="smoke">${lim===0?'I slipped':'I smoked one'}</button>
+              <button class="btn-line" type="button" data-act="resist">I resisted a craving${res?' ('+res+' today)':''}</button>
+              <section class="stack" style="gap:10px"><h2>Logged today</h2>${chips}</section>
+            </div>`;
+          }
+          function updatePace(){
+            const el=$('#pace');if(!el)return;
+            const now=Date.now(),pc=pacing(now),p=state.plan;
+            let l='',t='',s='';
+            if(pc.mode==='free'){l='Today’s plan';t='Zero';s='You are in the smoke-free phase. Log a cigarette only if you slip.'}
+            else if(pc.mode==='done'){l='Limit reached';t='None left';s='Tomorrow: '+limitFor(p,addDays(keyOf(now),1))+' a day.'}
+            else{
+              const gapMin=Math.round(pc.gap/60000);
+              if(pc.mode==='wait'){l=pc.n===0?'First cigarette in':'Next cigarette in';t=fmtCountdown(pc.nextAt-now);s='At '+fmtTime(pc.nextAt)+', about one every '+gapMin+' min.'}
+              else{l='Next cigarette';t='Allowed now';s='Waiting a few more minutes still helps. About one every '+gapMin+' min.'}
+            }
+            el.className='pace '+pc.mode;
+            $('#pace-l').textContent=l;$('#pace-t').textContent=t;$('#pace-s').textContent=s;
+          }
+
+          function viewPlan(){
+            const p=state.plan,k=keyOf(Date.now()),w=weekIndex(p,k);
+            const free=addDays(p.planStart,p.weeks*7);
+            const daysLeft=Math.max(0,dayNum(free)-dayNum(k));
+            const D=Math.max(0,dayNum(k)-dayNum(p.planStart)),d7=D%7;
+            const n=p.weeks+1,W=320,base=108,maxH=88,gap=3,bw=(W-gap*(n-1))/n;
+            let bars='';
+            for(let i=0;i<n;i++){
+              const lim=limitForWeek(p,i),h=lim===0?3:Math.max(4,lim/p.start*maxH),x=i*(bw+gap);
+              const fill=i<w?'var(--air)':i===w?'var(--air)':'var(--track)';
+              bars+=`<rect x="${x.toFixed(2)}" y="${(base-h).toFixed(2)}" width="${bw.toFixed(2)}" height="${h.toFixed(2)}" rx="2" fill="${fill}" opacity="${i<w?0.4:1}"/>`;
+              if(i===w&&w<p.weeks)bars+=`<text class="cur" x="${(x+bw/2).toFixed(2)}" y="${(base-h-6).toFixed(2)}" text-anchor="middle">${lim}</text>`;
+            }
+            const every=lim=>lim>0?Math.round(wakingMinutes(p.wake,p.sleep)/lim):0;
+            let rows='';
+            for(let i=0;i<=p.weeks;i++){
+              const cls=i<w?'past':i===w?'now':'';
+              if(i===p.weeks){rows+=`<li class="wk ${cls}"><span class="w">Smoke-free</span><span class="d">From ${esc(fmtDate(free,{month:'short',day:'numeric'}))}</span><span class="l">0</span></li>`;continue}
+              const lim=limitForWeek(p,i),a=addDays(p.planStart,7*i),b=addDays(p.planStart,7*i+6);
+              rows+=`<li class="wk ${cls}"><span class="w">Week ${i+1}</span><span class="d">${esc(fmtDate(a,{month:'short',day:'numeric'}))} – ${esc(fmtDate(b,{month:'short',day:'numeric'}))}<br>one every ~${every(lim)} min</span><span class="l">${lim}/day</span></li>`;
+            }
+            let hold='';
+            if(w<p.weeks&&d7>0){
+              const newFree=addDays(free,d7);
+              hold=ask==='hold'
+                ?`<section class="card stack" style="gap:12px"><h2>Restart week ${w+1} today?</h2><p class="muted">Your limit stays at ${limitForWeek(p,w)} a day for 7 more days. Smoke-free date moves to ${esc(fmtDate(newFree,{weekday:'short',month:'long',day:'numeric'}))}.</p><div class="btn-row"><button class="btn-air" type="button" data-act="hold-yes">Restart week</button><button class="btn-line" type="button" data-act="ask-no">Cancel</button></div></section>`
+                :`<section class="card stack" style="gap:10px"><h2>Rough week?</h2><p class="muted">Start this level over from today. The next step down comes 7 days from now.</p><button class="btn-line" type="button" data-act="hold-ask">Restart this week from today</button></section>`;
+            }
+            const lead=w>=p.weeks?'You are in the smoke-free phase.':'Smoke-free from <strong>'+esc(fmtDate(free,{weekday:'long',month:'long',day:'numeric',year:'numeric'}))+'</strong>, '+daysLeft+' day'+(daysLeft===1?'':'s')+' to go.';
+            return `<div class="stack">
+              <div><p class="eyebrow">Your taper</p><h1>Plan</h1></div>
+              <p class="lead" style="color:var(--ink)">${lead}</p>
+              <svg class="stairs" viewBox="0 0 ${W} 124" role="img" aria-label="Daily limit by week, from ${p.start} down to zero">
+                ${bars}
+                <text x="0" y="122" text-anchor="start">Week 1</text>
+                <text x="${W}" y="122" text-anchor="end">Smoke-free</text>
+              </svg>
+              ${hold}
+              <ul class="weeks">${rows}</ul>
+            </div>`;
+          }
+
+          function fmtMoney(x){const c=state.plan.cur,s=Math.round(x).toLocaleString();return c.length<=1?c+s:s+' '+c}
+          function viewProgress(){
+            const p=state.plan,today=keyOf(Date.now());
+            let avoided=0;
+            Object.keys(state.limits).filter(k=>k<today).forEach(k=>{avoided+=Math.max(0,p.start-(state.log[k]||[]).length)});
+            const per=p.packPrice>0?p.packPrice/p.packSize:0;
+            let streak=0;
+            for(let i=0;i<400;i++){
+              const k=addDays(today,-i),lim=state.limits[k];
+              if(lim===undefined){if(i===0)continue;break}
+              if((state.log[k]||[]).length<=lim)streak++;else break;
+            }
+            const resisted=Object.values(state.resisted).reduce((a,b)=>a+b,0);
+
+            const days=[];
+            for(let i=13;i>=0;i--){const k=addDays(today,-i);days.push({k,n:(state.log[k]||[]).length,lim:state.limits[k]})}
+            const top=Math.ceil(Math.max(p.start,5,...days.map(d=>d.n))/10)*10;
+            const W=340,H=196,L=30,R=6,T=12,B=26,pw=W-L-R,ph=H-T-B,sl=pw/14,bw=14;
+            const y=v=>T+ph*(1-v/top);
+            let g='';
+            [0,top/2,top].forEach(v=>{g+=`<line x1="${L}" x2="${W-R}" y1="${y(v).toFixed(1)}" y2="${y(v).toFixed(1)}" stroke="var(--line)" stroke-width="1"/><text x="${L-6}" y="${(y(v)+3.5).toFixed(1)}" text-anchor="end">${v}</text>`});
+            days.forEach((d,i)=>{
+              const x=L+i*sl+(sl-bw)/2;
+              if(d.lim===undefined){g+=`<rect x="${x.toFixed(1)}" y="${(y(0)-2).toFixed(1)}" width="${bw}" height="2" rx="1" fill="var(--line)"/>`}
+              else{
+                const h=Math.max(d.n>0?2:0,ph*d.n/top),over=d.n>d.lim;
+                g+=`<rect x="${x.toFixed(1)}" y="${(y(0)-h).toFixed(1)}" width="${bw}" height="${h.toFixed(1)}" rx="3" fill="${over?'var(--over-arc)':'var(--air)'}"/>`;
+                g+=`<line x1="${(x-2).toFixed(1)}" x2="${(x+bw+2).toFixed(1)}" y1="${y(d.lim).toFixed(1)}" y2="${y(d.lim).toFixed(1)}" stroke="var(--ink)" stroke-width="2" stroke-linecap="round"/>`;
+              }
+              g+=`<text${d.k===today?' class="today"':''} x="${(x+bw/2).toFixed(1)}" y="${H-8}" text-anchor="middle">${esc(dateOf(d.k).toLocaleDateString(undefined,{weekday:'narrow'}))}</text>`;
+            });
+            return `<div class="stack">
+              <div><p class="eyebrow">Since ${esc(fmtDate(p.planStart,{month:'short',day:'numeric'}))}</p><h1>Progress</h1></div>
+              <div class="tiles">
+                <div class="tile"><div class="v">${avoided}</div><div class="k">cigarettes not smoked, compared with ${p.start} a day</div></div>
+                <div class="tile"><div class="v">${per>0?esc(fmtMoney(avoided*per)):'—'}</div><div class="k">${per>0?'saved at your pack price':'saved. Add your pack price in Settings'}</div></div>
+                <div class="tile"><div class="v">${streak}</div><div class="k">day${streak===1?'':'s'} in a row within the limit</div></div>
+                <div class="tile"><div class="v">${resisted}</div><div class="k">cravings resisted</div></div>
+              </div>
+              <section class="card stack" style="gap:10px">
+                <h2>Last 14 days</h2>
+                <svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Cigarettes per day for the last 14 days, compared with each day’s limit">${g}</svg>
+                <div class="legend"><span><i class="sw" style="background:var(--air)"></i>Within limit</span><span><i class="sw" style="background:var(--over-arc)"></i>Over limit</span><span><i class="sw" style="background:var(--ink);height:3px;vertical-align:3px"></i>Limit that day</span></div>
+              </section>
+            </div>`;
+          }
+
+          function viewSettings(){
+            const p=state.plan;
+            const reset=ask==='reset'
+              ?`<section class="card stack" style="gap:12px"><h2>Erase everything?</h2><p class="muted">This deletes your plan and every logged cigarette, here and in your account. It cannot be undone.</p><div class="btn-row"><button class="btn-air" style="background:var(--over)" type="button" data-act="reset-yes">Erase all data</button><button class="btn-line" type="button" data-act="ask-no">Cancel</button></div></section>`
+              :`<button class="btn-line" type="button" data-act="reset-ask">Erase data and start over</button>`;
+            return `<div class="stack">
+              <div><p class="eyebrow">Plan details</p><h1>Settings</h1></div>
+              <form class="stack" id="set-form" novalidate>
+                <div class="row2">
+                  <div class="field"><label for="st-start">Cigarettes per day at start</label><input id="st-start" type="number" inputmode="numeric" min="1" max="200" value="${p.start}"></div>
+                  <div class="field"><label for="st-weeks">Weeks to reach zero</label><input id="st-weeks" type="number" inputmode="numeric" min="2" max="52" value="${p.weeks}"></div>
+                </div>
+                <div class="row2">
+                  <div class="field"><label for="st-wake">Wake up</label><input id="st-wake" type="time" value="${esc(p.wake)}"></div>
+                  <div class="field"><label for="st-sleep">Last cigarette by</label><input id="st-sleep" type="time" value="${esc(p.sleep)}"></div>
+                </div>
+                <div class="row3">
+                  <div class="field"><label for="st-price">Pack price</label><input id="st-price" type="text" inputmode="decimal" value="${p.packPrice>0?esc(p.packPrice):''}" placeholder="Optional"></div>
+                  <div class="field"><label for="st-pack">Cigarettes per pack</label><input id="st-pack" type="number" inputmode="numeric" min="1" value="${p.packSize}"></div>
+                  <div class="field"><label for="st-cur">Currency</label><input id="st-cur" type="text" maxlength="4" value="${esc(p.cur)}"></div>
+                </div>
+                <p class="hint">Changing the start count or weeks recalculates today’s limit. Past days keep the limit they had.</p>
+                <p class="err" id="st-err"></p>
+                <button class="btn-main" type="submit">Save changes</button>
+              </form>
+              <p class="hint" id="sync-note"></p>
+              ${reset}
+            </div>`;
+          }
+
+          /* ---------- shell ---------- */
+          const TABS=[
+            {id:'today',label:'Today',icon:'<circle cx="12" cy="12" r="8.5"/><path d="M12 7v5l3 2"/>'},
+            {id:'plan',label:'Plan',icon:'<path d="M3 20v-5h6v-5h6V5h6"/>'},
+            {id:'progress',label:'Progress',icon:'<path d="M5 20v-8M12 20V6M19 20v-5"/>'},
+            {id:'settings',label:'Settings',icon:'<path d="M4 8h10M18 8h2M4 16h2M10 16h10"/><circle cx="16" cy="8" r="2"/><circle cx="8" cy="16" r="2"/>'}
+          ];
+          function buildTabs(){
+            $('#tabs').innerHTML=TABS.map(t=>`<button type="button" data-tab="${t.id}"><svg viewBox="0 0 24 24" aria-hidden="true">${t.icon}</svg><span>${t.label}</span></button>`).join('');
+          }
+          function drawTabs(){
+            document.querySelectorAll('#tabs button').forEach(b=>{if(b.dataset.tab===tab)b.setAttribute('aria-current','page');else b.removeAttribute('aria-current')});
+          }
+          function render(){
+            const view=$('#view');
+            if(!state){
+              $('#tabs').hidden=true;view.innerHTML=viewOnboard();updateObPreview();return;
+            }
+            const k=keyOf(Date.now());shownKey=k;ensureDay(k);
+            $('#tabs').hidden=false;drawTabs();
+            const fn={today:viewToday,plan:viewPlan,progress:viewProgress,settings:viewSettings}[tab]||viewToday;
+            view.innerHTML=fn();
+            if(tab==='today')updatePace();
+            if(tab==='settings')updateSyncNote();
+          }
+
+          /* ---------- events ---------- */
+          document.addEventListener('click',e=>{
+            const b=e.target.closest('[data-act],[data-tab]');if(!b)return;
+            if(b.dataset.tab){tab=b.dataset.tab;ask=null;render();$('#view').scrollTop=0;return}
+            switch(b.dataset.act){
+              case 'weeks':obWeeks=parseInt(b.dataset.w,10);document.querySelectorAll('.seg button').forEach(x=>x.setAttribute('aria-pressed',String(x===b)));updateObPreview();break;
+              case 'smoke':smoke();break;
+              case 'resist':resist();break;
+              case 'undo':undoLast();break;
+              case 'del':removeAt(parseInt(b.dataset.i,10));break;
+              case 'hold-ask':ask='hold';render();break;
+              case 'hold-yes':{
+                const k=keyOf(Date.now()),w=weekIndex(state.plan,k);
+                state.plan.planStart=addDays(k,-7*w);persist();ask=null;toast('This level restarts today.');render();break}
+              case 'reset-ask':ask='reset';render();break;
+              case 'ask-no':ask=null;render();break;
+              case 'reset-yes':
+                state=null;saveLocal();
+                if(remoteDoc){remoteDoc.delete().catch(()=>{})}
+                ask=null;tab='today';lastLog=null;render();break;
+            }
+          });
+          document.addEventListener('input',e=>{if(e.target.closest&&e.target.closest('#onb-form'))updateObPreview()});
+          document.addEventListener('submit',e=>{
+            const f=e.target;
+            if(f.id==='onb-form'){
+              e.preventDefault();
+              const start=parseInt($('#ob-start').value,10);
+              if(!(start>=1&&start<=200)){$('#ob-err').textContent='Enter a daily count between 1 and 200.';return}
+              state={v:1,updatedAt:Date.now(),plan:{start,weeks:obWeeks,planStart:keyOf(Date.now()),wake:$('#ob-wake').value||'07:00',sleep:$('#ob-sleep').value||'23:00',packPrice:0,packSize:20,cur:'$'},log:{},limits:{},resisted:{}};
+              persist();tab='today';render();
+            }else if(f.id==='set-form'){
+              e.preventDefault();
+              const start=parseInt($('#st-start').value,10),weeks=parseInt($('#st-weeks').value,10),err=$('#st-err');
+              if(!(start>=1&&start<=200)){err.textContent='Enter a daily count between 1 and 200.';return}
+              if(!(weeks>=2&&weeks<=52)){err.textContent='Choose between 2 and 52 weeks.';return}
+              const price=parseFloat(String($('#st-price').value).replace(',','.')),pack=parseInt($('#st-pack').value,10);
+              Object.assign(state.plan,{start,weeks,wake:$('#st-wake').value||'07:00',sleep:$('#st-sleep').value||'23:00',packPrice:price>0?price:0,packSize:pack>0?pack:20,cur:($('#st-cur').value||'$').trim().slice(0,4)||'$'});
+              persist();toast('Saved.');render();
+            }
+          });
+          document.addEventListener('visibilitychange',()=>{if(!document.hidden&&state)render()});
+          setInterval(()=>{
+            if(!state)return;
+            if(keyOf(Date.now())!==shownKey)render();
+            else if(tab==='today')updatePace();
+          },1000);
+
+          /* ---------- start ---------- */
+          buildTabs();
+          state=loadLocal();
+          render();
+          initRemote();
+          })();
+          </script>
+          </body>
+          </html>
+          HTML_EOF
+
+      - name: Draw the icon and splash screen
+        run: |
+          pip install --quiet pillow
+          python3 - <<'PY_EOF'
+          from PIL import Image, ImageDraw
+          import math, os
+          BG=(11,22,24,255); TRACK=(28,50,54,255); RING=(60,196,179,255)
+          def ring(size, outer, stroke, bg):
+              k=4; n=size*k
+              im=Image.new('RGBA',(n,n),bg); d=ImageDraw.Draw(im)
+              c=n/2; R=outer*n/2; w=stroke*n
+              box=[c-R,c-R,c+R,c+R]
+              d.ellipse(box,outline=TRACK,width=int(w))
+              d.arc(box,-90,180,fill=RING,width=int(w))
+              rm=R-w/2
+              for th in (-90,180):
+                  x=c+rm*math.cos(math.radians(th)); y=c+rm*math.sin(math.radians(th))
+                  d.ellipse([x-w/2,y-w/2,x+w/2,y+w/2],fill=RING)
+              return im.resize((size,size),Image.LANCZOS)
+          def circle_mask(img):
+              n=img.size[0]; m=Image.new('L',(n*4,n*4),0); ImageDraw.Draw(m).ellipse([0,0,n*4-1,n*4-1],fill=255)
+              m=m.resize((n,n),Image.LANCZOS); out=Image.new('RGBA',(n,n),(0,0,0,0)); out.paste(img,(0,0),m); return out
+          legacy={'mdpi':48,'hdpi':72,'xhdpi':96,'xxhdpi':144,'xxxhdpi':192}
+          fg={'mdpi':108,'hdpi':162,'xhdpi':216,'xxhdpi':324,'xxxhdpi':432}
+          for d in legacy:
+              os.makedirs('icons/'+d,exist_ok=True)
+              sq=ring(legacy[d],0.62,0.085,BG)
+              sq.save('icons/'+d+'/ic_launcher.png')
+              circle_mask(sq).save('icons/'+d+'/ic_launcher_round.png')
+              ring(fg[d],0.52,0.07,(0,0,0,0)).save('icons/'+d+'/ic_launcher_foreground.png')
+          sizes={'drawable-land-hdpi':(800,480),'drawable-land-mdpi':(480,320),'drawable-land-xhdpi':(1280,720),'drawable-land-xxhdpi':(1600,960),'drawable-land-xxxhdpi':(1920,1280),
+          'drawable-port-hdpi':(480,800),'drawable-port-mdpi':(320,480),'drawable-port-xhdpi':(720,1280),'drawable-port-xxhdpi':(960,1600),'drawable-port-xxxhdpi':(1280,1920),'drawable':(480,320)}
+          for name,(w,h) in sizes.items():
+              os.makedirs('splash/'+name,exist_ok=True)
+              img=Image.new('RGB',(w,h),BG[:3])
+              D=int(min(w,h)*0.26)
+              r=ring(D,0.98,0.11,(0,0,0,0))
+              img.paste(r,((w-D)//2,(h-D)//2),r)
+              img.save('splash/'+name+'/splash.png',optimize=True)
+          print('icons and splash images drawn')
+          PY_EOF
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Create the Android project
+        run: npx cap add android
+
+      - name: Apply icon, splash screen and colours
+        run: |
+          RES=android/app/src/main/res
+          for d in mdpi hdpi xhdpi xxhdpi xxxhdpi; do
+            cp "icons/$d/ic_launcher.png"            "$RES/mipmap-$d/ic_launcher.png"
+            cp "icons/$d/ic_launcher_round.png"      "$RES/mipmap-$d/ic_launcher_round.png"
+            cp "icons/$d/ic_launcher_foreground.png" "$RES/mipmap-$d/ic_launcher_foreground.png"
+          done
+          cat > "$RES/values/ic_launcher_background.xml" <<'XML_EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <color name="ic_launcher_background">#0B1618</color>
+          </resources>
+          XML_EOF
+          for dir in splash/*/; do
+            name=$(basename "$dir")
+            cp "$dir/splash.png" "$RES/$name/splash.png"
+          done
+          sed -i 's|<item name="android:background">@null</item>|<item name="android:background">@null</item>\n        <item name="android:statusBarColor">@color/ic_launcher_background</item>\n        <item name="android:windowLightStatusBar">false</item>|' "$RES/values/styles.xml"
+          grep -q 'android:statusBarColor' "$RES/values/styles.xml" || { echo "status bar edit did not apply"; exit 1; }
+          echo "Branding applied."
+
+      - name: Copy web files into the app
+        run: npx cap sync android
+
+      - name: Build the APK
+        working-directory: android
+        run: ./gradlew assembleDebug --no-daemon
+
+      - name: Name the APK
+        run: cp android/app/build/outputs/apk/debug/app-debug.apk Taper.apk
+
+      - name: Keep the APK with this run
+        uses: actions/upload-artifact@v4
+        with:
+          name: Taper-apk
+          path: Taper.apk
+
+      - name: Publish a download link
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "build-${{ github.run_number }}" Taper.apk \
+            --title "Taper build ${{ github.run_number }}" \
+            --notes "Android APK. Open the Taper.apk file below on your phone to install."
